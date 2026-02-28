@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(which nvcc && nvcc --version)",
+      "Bash(make clean && make)",
+      "Bash(./gemm)",
+      "Bash(nvidia-smi)",
+      "Bash(make clean && make && ./gemm)",
+      "Bash(nvcc -o test_cuda test_cuda.cu && ./test_cuda)"
+    ]
+  }
+}
