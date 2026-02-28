@@ -1,4 +1,3 @@
-#include <__clang_cuda_runtime_wrapper.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
 
@@ -24,19 +23,37 @@ __global__ void transposeNaive(float *out, const float *in, int width,
 
 __global__ void transposeTiled(float *out, const float *in, int width,
                                int height) {
-  // 把一个tile中的数据从全局内存合并读取到share memory
-  // 在Share memory 中做转置
-  // 然后转置后的Tile合并写回内存
+  // 声明 shared memory，+1 padding 避免 bank conflict
+  __shared__ float tile[TILE_SIZE][TILE_SIZE + 1];
 
-  // share memory 声明
-  __shared__ float tile[TILE_SIZE][TILE_SIZE];
+  // ========== Step 1: 从全局内存读入 shared memory ==========
+  // 当前线程负责读取的原矩阵位置
+  int col = blockIdx.x * TILE_SIZE + threadIdx.x;
+  int row = blockIdx.y * TILE_SIZE + threadIdx.y;
 
-  // 当前线程在全局矩阵中的位置 read
-  int col_in = blockIdx.x * TILE_SIZE + threadIdx.x;
-  int row_in = blockIdx.y * TILE_SIZE + threadIdx.y;
+  if (row < height && col < width) {
+    // 按行优先存入 tile：行=threadIdx.y, 列=threadIdx.x
+    tile[threadIdx.y][threadIdx.x] = in[row * width + col];
+  }
 
-  // 写出位置，整个tile被转置
-  int row_out = blockIdx.x * TILE_SIZE + threadIdx.y;
+  __syncthreads();
+
+  // ========== Step 2: 从 shared memory 写出到全局内存 ==========
+  // 为了实现转置，原矩阵 (r, c) 的元素要写到转置矩阵的 (c, r)
+  // 在线程协作方案中：
+  // - 线程 (tx, ty) 读取原矩阵 (bx*T+tx, by*T+ty) 到 tile[ty][tx]
+  // - 线程 (tx, ty) 将 tile[tx][ty] 写出到转置矩阵 (bx*T+ty, by*T+tx)
+  // 这样相邻线程 (tx, ty) 和 (tx+1, ty) 写出的地址是连续的（合并写入）
+
+  // 线程 (tx, ty) 负责写转置后矩阵的 (bx*T+ty, by*T+tx) 位置
+  int out_row = blockIdx.x * TILE_SIZE + threadIdx.y; // 转置后的行 = bx*T + ty
+  int out_col = blockIdx.y * TILE_SIZE + threadIdx.x; // 转置后的列 = by*T + tx
+
+  // 转置后矩阵是 width × height（width行，height列）
+  if (out_row < width && out_col < height) {
+    // 从 tile[tx][ty] 读取，这个位置存储的是原矩阵 (bx*T+ty, by*T+tx)
+    out[out_row * height + out_col] = tile[threadIdx.x][threadIdx.y];
+  }
 }
 
 void initMatrix(float *data, int size) {
@@ -69,10 +86,65 @@ void showMatrix(float *matrix, int width, int height) {
   }
 }
 
+// 性能测试辅助函数
+float benchmarkNaive(float *d_out, float *d_in, int width, int height,
+                     dim3 gridSize, dim3 blockSize, int iterations) {
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  // warmup
+  transposeNaive<<<gridSize, blockSize>>>(d_out, d_in, width, height);
+  cudaDeviceSynchronize();
+
+  cudaEventRecord(start);
+  for (int i = 0; i < iterations; i++) {
+    transposeNaive<<<gridSize, blockSize>>>(d_out, d_in, width, height);
+  }
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  return ms / iterations;
+}
+
+float benchmarkTiled(float *d_out, float *d_in, int width, int height,
+                     dim3 gridSize, dim3 blockSize, int iterations) {
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  // warmup
+  transposeTiled<<<gridSize, blockSize>>>(d_out, d_in, width, height);
+  cudaDeviceSynchronize();
+
+  cudaEventRecord(start);
+  for (int i = 0; i < iterations; i++) {
+    transposeTiled<<<gridSize, blockSize>>>(d_out, d_in, width, height);
+  }
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  return ms / iterations;
+}
+
 int main() {
-  int width = 3;
-  int height = 3;
-  int size = width * height * sizeof(float); // 分配多少内存
+  // 大矩阵测试
+  int width = 4096;
+  int height = 8192;
+  int size = width * height * sizeof(float);
+  int iterations = 100;
+
+  printf("Matrix size: %d x %d = %.2f MB\n", width, height,
+         size / (1024.0 * 1024.0));
+  printf("Iterations: %d\n\n", iterations);
 
   // CPU 内存
   float *h_in = (float *)malloc(size);
@@ -87,23 +159,51 @@ int main() {
   // copy data to gpu
   cudaMemcpy(d_in, h_in, size, cudaMemcpyHostToDevice);
 
-  // thread block and grid size
-  dim3 blockSize(16, 16); // 256 threads in 256/32 = 8 warp
+  // ==================== Naive 版本 ====================
+  dim3 blockSize(16, 16);
   dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
                 (height + blockSize.y - 1) / blockSize.y);
 
-  // launch kernel
+  float naiveTime = benchmarkNaive(d_out, d_in, width, height, gridSize,
+                                   blockSize, iterations);
+
+  // 验证结果
   transposeNaive<<<gridSize, blockSize>>>(d_out, d_in, width, height);
-
   cudaMemcpy(h_out, d_out, size, cudaMemcpyDeviceToHost);
+  bool naivePassed = checkResult(h_out, h_in, width, height);
 
-  printf("====== Orignal ======\n");
-  showMatrix(h_in, width, height);
-  printf("====== Transposed ======\n");
-  showMatrix(h_out, width, height);
-  if (checkResult(h_out, h_in, width, height)) {
-    printf("PASSED\n");
-  }
+  printf("Naive Transpose:\n");
+  printf("  Grid:  (%d, %d), Block: (%d, %d)\n", gridSize.x, gridSize.y,
+         blockSize.x, blockSize.y);
+  printf("  Time:  %.3f ms\n", naiveTime);
+  printf("  Bandwidth: %.2f GB/s\n",
+         (2.0 * size / (1024.0 * 1024.0 * 1024.0)) / (naiveTime / 1000.0));
+  printf("  Result: %s\n\n", naivePassed ? "PASSED" : "FAILED");
+
+  // ==================== Tiled 版本 ====================
+  dim3 tileBlockSize(TILE_SIZE, TILE_SIZE); // 32x32 = 1024 threads
+  dim3 tileGridSize((width + TILE_SIZE - 1) / TILE_SIZE,
+                    (height + TILE_SIZE - 1) / TILE_SIZE);
+
+  float tiledTime = benchmarkTiled(d_out, d_in, width, height, tileGridSize,
+                                   tileBlockSize, iterations);
+
+  // 验证结果
+  transposeTiled<<<tileGridSize, tileBlockSize>>>(d_out, d_in, width, height);
+  cudaMemcpy(h_out, d_out, size, cudaMemcpyDeviceToHost);
+  bool tiledPassed = checkResult(h_out, h_in, width, height);
+
+  printf("Tiled Transpose:\n");
+  printf("  Grid:  (%d, %d), Block: (%d, %d)\n", tileGridSize.x, tileGridSize.y,
+         tileBlockSize.x, tileBlockSize.y);
+  printf("  Time:  %.3f ms\n", tiledTime);
+  printf("  Bandwidth: %.2f GB/s\n",
+         (2.0 * size / (1024.0 * 1024.0 * 1024.0)) / (tiledTime / 1000.0));
+  printf("  Result: %s\n\n", tiledPassed ? "PASSED" : "FAILED");
+
+  // ==================== 性能对比 ====================
+  printf("Performance Comparison:\n");
+  printf("  Speedup: %.2fx\n", naiveTime / tiledTime);
 
   cudaFree(d_in);
   cudaFree(d_out);
