@@ -26,32 +26,24 @@ __global__ void transposeTiled(float *out, const float *in, int width,
   // 声明 shared memory，+1 padding 避免 bank conflict
   __shared__ float tile[TILE_SIZE][TILE_SIZE + 1];
 
-  // ========== Step 1: 从全局内存读入 shared memory ==========
-  // 当前线程负责读取的原矩阵位置
+  // 计算全局坐标
   int col = blockIdx.x * TILE_SIZE + threadIdx.x;
   int row = blockIdx.y * TILE_SIZE + threadIdx.y;
 
   if (row < height && col < width) {
-    // 按行优先存入 tile：行=threadIdx.y, 列=threadIdx.x
+    // 线程取当前全局坐标位置的数据 read 到 shared memory中
     tile[threadIdx.y][threadIdx.x] = in[row * width + col];
   }
 
-  __syncthreads();
+  __syncthreads(); // 等待所有线程读取完成，整个tile都读取完成
 
-  // ========== Step 2: 从 shared memory 写出到全局内存 ==========
-  // 为了实现转置，原矩阵 (r, c) 的元素要写到转置矩阵的 (c, r)
-  // 在线程协作方案中：
-  // - 线程 (tx, ty) 读取原矩阵 (bx*T+tx, by*T+ty) 到 tile[ty][tx]
-  // - 线程 (tx, ty) 将 tile[tx][ty] 写出到转置矩阵 (bx*T+ty, by*T+tx)
-  // 这样相邻线程 (tx, ty) 和 (tx+1, ty) 写出的地址是连续的（合并写入）
-
-  // 线程 (tx, ty) 负责写转置后矩阵的 (bx*T+ty, by*T+tx) 位置
-  int out_row = blockIdx.x * TILE_SIZE + threadIdx.y; // 转置后的行 = bx*T + ty
-  int out_col = blockIdx.y * TILE_SIZE + threadIdx.x; // 转置后的列 = by*T + tx
+  // 相同的线程读取同block内对应转置之后位置的数据
+  int out_row = blockIdx.x * TILE_SIZE + threadIdx.y; // 同样的前缀 blockIdx.x * TILE_SIZE, 从threadIdx.x -> threadIdx.y
+  int out_col = blockIdx.y * TILE_SIZE + threadIdx.x; // 同样的前缀 blockIdx.y * TILE_SIZE, 从threadIdx.y -> threadIdx.x
 
   // 转置后矩阵是 width × height（width行，height列）
   if (out_row < width && out_col < height) {
-    // 从 tile[tx][ty] 读取，这个位置存储的是原矩阵 (bx*T+ty, by*T+tx)
+    // 相同的线程， 把tile[threadIdx.x][threadIdx.y] 也就是对应转置后的矩阵的数写入到global memory
     out[out_row * height + out_col] = tile[threadIdx.x][threadIdx.y];
   }
 }
