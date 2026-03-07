@@ -38,12 +38,19 @@ __global__ void transposeTiled(float *out, const float *in, int width,
   __syncthreads(); // 等待所有线程读取完成，整个tile都读取完成
 
   // 相同的线程读取同block内对应转置之后位置的数据
-  int out_row = blockIdx.x * TILE_SIZE + threadIdx.y; // 同样的前缀 blockIdx.x * TILE_SIZE, 从threadIdx.x -> threadIdx.y
-  int out_col = blockIdx.y * TILE_SIZE + threadIdx.x; // 同样的前缀 blockIdx.y * TILE_SIZE, 从threadIdx.y -> threadIdx.x
+  int out_row =
+      blockIdx.x * TILE_SIZE +
+      threadIdx
+          .y; // 同样的前缀 blockIdx.x * TILE_SIZE, 从threadIdx.x -> threadIdx.y
+  int out_col =
+      blockIdx.y * TILE_SIZE +
+      threadIdx
+          .x; // 同样的前缀 blockIdx.y * TILE_SIZE, 从threadIdx.y -> threadIdx.x
 
   // 转置后矩阵是 width × height（width行，height列）
   if (out_row < width && out_col < height) {
-    // 相同的线程， 把tile[threadIdx.x][threadIdx.y] 也就是对应转置后的矩阵的数写入到global memory
+    // 相同的线程， 把tile[threadIdx.x][threadIdx.y]
+    // 也就是对应转置后的矩阵的数写入到global memory
     out[out_row * height + out_col] = tile[threadIdx.x][threadIdx.y];
   }
 }
@@ -132,7 +139,7 @@ int main() {
   int width = 4096;
   int height = 8192;
   int size = width * height * sizeof(float);
-  int iterations = 100;
+  int iterations = 1;
 
   printf("Matrix size: %d x %d = %.2f MB\n", width, height,
          size / (1024.0 * 1024.0));
