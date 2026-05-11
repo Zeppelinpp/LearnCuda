@@ -33,12 +33,18 @@ __global__ void layernorm_naive(
   // tree reduction -> mean
   __shared__ float sharedMean[BLOCK_SIZE];
   sharedMean[tid] = sum;
+  __syncthreads();
+  unsigned long long t1 = clock64();  // timing start
   for (int stride = blockDim.x /2; stride > 0; stride >>= 1) {
     if (tid < stride) {
-      sharedMean[tid] += sharedMean[tid + stride];
+      float a = sharedMean[tid];
+      float b = sharedMean[tid + stride];
+      sharedMean[tid] = a + b;
     }
     __syncthreads();
   }
+  unsigned long long t2 = clock64();  // timing end
+  if (tid == 0 && token_idx == 0) printf("naive reduction cycles: %llu\n", t2 - t1);
 
   __shared__ float mean;
   if (tid == 0) {
@@ -54,9 +60,12 @@ __global__ void layernorm_naive(
     var_sum += diff * diff;
   }
   sharedVar[tid] = var_sum;
+  __syncthreads();
   for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
     if (tid < stride) {
-      sharedVar[tid] += sharedVar[tid + stride];
+      float a = sharedVar[tid];
+      float b = sharedVar[tid + stride];
+      sharedVar[tid] = a + b;
     }
     __syncthreads();
   }

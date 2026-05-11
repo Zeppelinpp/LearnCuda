@@ -1,10 +1,16 @@
 import torch
+import triton.language as tl
+import triton
 
 N = 1 << 26
 a = torch.randn(N, device='cuda', dtype=torch.float32)
 b = torch.randn(N, device='cuda', dtype=torch.float32)
 
 _ = a + b
+
+@triton.jit
+def add_naive_kernel(a_ptr, b_ptr, c_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pass
 
 def benchmark_add(func, *args, name="Add", n_warmup=5, n_repeat=20):
     for _ in range(n_warmup):

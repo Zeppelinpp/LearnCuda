@@ -15,7 +15,6 @@ __device__ void merge_online(
   }
 }
 
-
 __global__ void online_softmax(
   const float* __restrict__ input, 
   float* __restrict__ output,
@@ -28,8 +27,8 @@ __global__ void online_softmax(
   float rowSum = 0.0f;
 
   for (int i = 0; i < cols; i++) {
-    float curVal = output[row * cols + i];
-    float preamx = max;
+    float curVal = input[row * cols + i];
+    float premax = max;
     max = fmaxf(max, curVal);
     rowSum = rowSum * expf(premax - max) + expf(curVal - max);
   }
@@ -109,9 +108,11 @@ void cpu_softmax(const float* input, float* output, int rows, int cols) {
 }
 
 int main() {
-  int rows = 2;
-  int cols = 1024;
+  int rows = 4096;
+  int cols = 4096;
   size_t size = rows * cols * sizeof(float);
+  int warmup = 5;
+  int repeats = 1000;
 
   // 分配 host 内存
   float *h_input = (float*)malloc(size);
@@ -121,7 +122,7 @@ int main() {
   // 初始化数据
   srand(42);
   for (int i = 0; i < rows * cols; i++) {
-    h_input[i] = (float)(rand() % 100) / 10.0f - 5.0f;  // [-5, 5]
+    h_input[i] = (float)(rand() % 100) / 10.0f - 5.0f;
   }
 
   // 分配 device 内存
@@ -129,19 +130,36 @@ int main() {
   cudaMalloc(&d_input, size);
   cudaMalloc(&d_output, size);
 
-  // 拷贝到 device
   cudaMemcpy(d_input, h_input, size, cudaMemcpyHostToDevice);
 
-  // 启动 kernel（并行版本）
-  online_softmax_parallel<<<rows, 256>>>(d_input, d_output, rows, cols);
+  // Warm-up: 触发 context 初始化 + cache warm-up
+  for (int i = 0; i < warmup; i++) {
+    online_softmax_parallel<<<rows, 256>>>(d_input, d_output, rows, cols);
+  }
+  cudaDeviceSynchronize();
 
-  // 拷贝结果回 host
+  // CUDA event 计时
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
+  for (int i = 0; i < repeats; i++) {
+    online_softmax_parallel<<<rows, 256>>>(d_input, d_output, rows, cols);
+  }
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  printf("Kernel avg time: %.4f ms (%d runs)\n", ms / repeats, repeats);
+  printf("Throughput: %.2f GFLOP/s\n",
+         (float)rows * cols * 5 * repeats / (ms * 1e6));
+
+  // 拷贝最后一次结果回 host 验证
   cudaMemcpy(h_output, d_output, size, cudaMemcpyDeviceToHost);
-
-  // CPU 参考计算
   cpu_softmax(h_input, h_ref, rows, cols);
 
-  // 验证
   float max_error = 0.0f;
   for (int i = 0; i < rows * cols; i++) {
     float err = fabsf(h_output[i] - h_ref[i]);
@@ -150,7 +168,8 @@ int main() {
   printf("Max error: %e\n", max_error);
   printf("Test %s\n", max_error < 1e-5 ? "PASSED" : "FAILED");
 
-  // 释放内存
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
   cudaFree(d_input);
   cudaFree(d_output);
   free(h_input);
