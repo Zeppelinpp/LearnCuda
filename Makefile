@@ -5,8 +5,6 @@ NVCC = nvcc
 
 # Compiler flags
 NVCC_FLAGS = -O3 -arch=sm_70 -std=c++14
-# Use sm_70 for Volta (V100), adjust based on your GPU:
-#   sm_60: Pascal (P100)
 #   sm_70: Volta (V100)
 #   sm_75: Turing (RTX 2080)
 #   sm_80: Ampere (A100, RTX 3090)

@@ -1,0 +1,23 @@
+{
+  "configurations": [
+    {
+      "name": "Linux CUDA",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "/usr/local/cuda/include"
+      ],
+      "forcedInclude": [
+        "/usr/local/cuda/include/cuda_runtime.h"
+      ],
+      "defines": [
+        "__CUDACC__",
+        "__CUDART__"
+      ],
+      "compilerPath": "/usr/bin/g++",
+      "cppStandard": "c++17",
+      "cStandard": "c17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}
