@@ -74,11 +74,32 @@ cudaEventDestroy(start);
 cudaEventDestroy(stop);
 ```
 
-## 5. 常见坑
+## 5. `cudaDeviceSynchronize` vs `cudaEventSynchronize`
+
+| | `cudaEventSynchronize(stop)` | `cudaDeviceSynchronize()` |
+|--|------------------------------|---------------------------|
+| 等待范围 | 只等这个 event 之前的 stream 操作 | 等 device 上**所有 stream**全部做完 |
+| 用途 | Event 计时后读取结果 | Host 读 GPU 数据前确保完成 |
+| 性能影响 | 小（只等必要工作） | 大（全局栅栏，破坏流水线） |
+
+**计时场景**：
+- 简单 benchmark：可以用 `cudaDeviceSynchronize()` 替代 event sync，但会多等其它 stream 的工作
+- 严谨 benchmark：必须用 `cudaEventSynchronize(stop)`，只等目标 stream
+
+**Host 读数据场景**：
+```c
+kernel<<<...>>>(d_C, ...);
+cudaDeviceSynchronize();              // 确保 kernel 写完了
+cudaMemcpy(C, d_C, size, D2H);        // 再拷回 CPU
+// 或者直接用同步 memcpy：
+cudaMemcpy(C, d_C, size, D2H);        // pageable memory 下会隐式 sync
+```
+
+## 6. 常见坑
 
 | 坑 | 后果 | 解决 |
 |---|------|------|
-| 漏掉 `cudaEventSynchronize` | 读到错误时间戳（GPU 还没跑完） | 必须 sync 才能 ElapsedTime |
+| 漏掉 `cudaEventSynchronize` / `cudaDeviceSynchronize` | 读到错误时间戳（GPU 还没跑完） | 必须 sync 后才能读时间 |
 | 不做 warmup | 前几次 kernel 慢（GPU clock 爬升 + cache 冷） | 先跑 5~10 次不计时 |
 | repeats 太少 | 单次 < 1ms 时计时噪声大 | repeats 100~1000，结果取平均 |
 | 把 `cudaMemcpy` 算进计时 | PCIe 传输时间污染 kernel 时间 | Record 只包 kernel，不包 memcpy |
