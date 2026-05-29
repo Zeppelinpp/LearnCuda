@@ -16,8 +16,7 @@ __global__ void naive_matmul(float* A, float* B, float* out, int m, int n, int k
 
   if (row < m && col < n) {
     float sum = 0.0f;
-    for (int i = 0; i < k; i++) {
-      sum += A[row * k + i] * B[i * n + col];
+    for (int i = 0; i < k; i++) { sum += A[row * k + i] * B[i * n + col];
     }
     out[row * n + col] = sum;
   }
@@ -96,7 +95,7 @@ int main() {
   cudaDeviceSynchronize();
   float ms_tiled = 0;
   cudaEventElapsedTime(&ms_tiled, start, stop);
-  printf("naive: %.3f ms, tiled: %.3f ms\n", ms_naive, ms_tiled);
+  printf("Naive: %.3f ms\nTiled: %.3f ms\nSpeedup: %.3fx ", ms_naive, ms_tiled, ms_naive / ms_tiled);
 
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
