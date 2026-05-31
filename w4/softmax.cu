@@ -4,6 +4,7 @@
 #include <math.h>
 
 #define BLOCK_SIZE 256
+#define PAD(i) ((i) + ((i) >> 5))
 
 // Naive Softmax
 // y = exp(x - max) / sum(exp(x - max))
@@ -13,22 +14,22 @@ __global__ void softmaxNaive(const float *input, float *output, int M, int N) {
   int tid = threadIdx.x;
 
   // find rowMax
-  __shared__ float sMax[BLOCK_SIZE];
+  __shared__ float sMax[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
   float blockMax = -INFINITY;
   for (int i = tid; i < N; i += blockDim.x) {
     blockMax = fmaxf(blockMax, input[row * N + i]);
   }
-  sMax[tid] = blockMax;
+  sMax[PAD(tid)] = blockMax;
   __syncthreads();
 
   // tree reduction for whole row max
   for (int stride = BLOCK_SIZE / 2; stride > 0; stride >>= 1) {
     if (tid < stride) {
-      sMax[tid] = fmaxf(sMax[tid], sMax[tid + stride]);
+      sMax[PAD(tid)] = fmaxf(sMax[PAD(tid)], sMax[PAD(tid+stride)]);
     }
     __syncthreads();
   }
-  float rowMax = sMax[0];
+  float rowMax = sMax[PAD(0)];
   __syncthreads();
 
   // Exp and local sum
@@ -40,16 +41,16 @@ __global__ void softmaxNaive(const float *input, float *output, int M, int N) {
   }
 
   // reduction for sum, set sSum[tid] = localSum, prepare for tree reduction
-  __shared__ float sSum[BLOCK_SIZE];
-  sSum[tid] = localSum;
+  __shared__ float sSum[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
+  sSum[PAD(tid)] = localSum;
   __syncthreads();
   for (int stride = BLOCK_SIZE / 2; stride > 0; stride >>= 1) {
     if (tid < stride) {
-      sSum[tid] = sSum[tid] + sSum[tid + stride];
+      sSum[PAD(tid)] = sSum[PAD(tid)] + sSum[PAD(tid + stride)];
     }
     __syncthreads();
   }
-  float rowSum = sSum[0];
+  float rowSum = sSum[PAD(0)];
   __syncthreads();
 
   // normalize
@@ -98,7 +99,8 @@ int main() {
     dim3 grid(M);
 
     // Warmup
-    softmaxNaive<<<grid, block>>>(d_input, d_output, M, N);
+    int warmup_runs = 5;
+    for (int i = 0; i < warmup_runs; i++) softmaxNaive<<<grid, block>>>(d_input, d_output, M, N);
     cudaDeviceSynchronize();
 
     // Benchmark with cudaEvent
