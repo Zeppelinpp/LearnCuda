@@ -18,25 +18,38 @@
 能否同时更新max和sum？
 
 ---
-## Baseline 结果
+## 实验结果
 
 ```bash
-========== softmaxNaive ==========
+========= softmaxNaive ==========
 Grid: 32768, Block: 256
-Time: 19.998 ms (avg of 10 runs)
-GFLOPS: 268.46
-Bandwidth: 1073.83 GB/s
+Time: 18.245 ms (avg of 10 runs)
+GFLOPS: 294.25
+Bandwidth: 1177.00 GB/s
 Max error: 5.784386e-10
 PASS
-```
 
-online softmax:
-```bash
 ========== onlineSoftmax ==========
 Grid: 32768, Block: 256
-Time: 12.608 ms (avg of 10 runs)
-GFLOPS: 596.14
-Bandwidth: 1021.95 GB/s
+Time: 13.598 ms (avg of 10 runs)
+GFLOPS: 552.74
+Bandwidth: 947.55 GB/s
 Max error: 5.711627e-10
 PASS
+
+========== onlineSoftmax_vectorized ==========
+Grid: 32768, Block: 256
+Time: 9.337 ms (avg of 10 runs)
+GFLOPS: 804.95
+Bandwidth: 1379.92 GB/s
+Max error: 5.711627e-10
+PASS
+
+========== Speedup ==========
+naive:   18.245 ms
+online:  13.598 ms
+Speedup(online) vs naive: 1.34x
+vector:  9.337 ms
+Speedup(vectorized & online) vs naive:  1.95x
+Speedup(vectorized & online) vs online: 1.46x
 ```
