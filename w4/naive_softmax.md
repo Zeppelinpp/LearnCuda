@@ -19,14 +19,24 @@
 
 ---
 ## Baseline 结果
+
 ```bash
+========== softmaxNaive ==========
 Grid: 32768, Block: 256
-Time: 18.259 ms (avg of 10 runs)
-GFLOPS: 294.03
-Bandwidth: 1176.11 GB/s
+Time: 19.998 ms (avg of 10 runs)
+GFLOPS: 268.46
+Bandwidth: 1073.83 GB/s
+Max error: 5.784386e-10
+PASS
 ```
 
-寄存器/shared memory 暂存expVal,统一写出HBM
+online softmax:
 ```bash
-
+========== onlineSoftmax ==========
+Grid: 32768, Block: 256
+Time: 12.608 ms (avg of 10 runs)
+GFLOPS: 596.14
+Bandwidth: 1021.95 GB/s
+Max error: 5.711627e-10
+PASS
 ```

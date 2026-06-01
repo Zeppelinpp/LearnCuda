@@ -162,6 +162,7 @@ int main() {
     float ms_total = 0.0f;
     cudaEventElapsedTime(&ms_total, start, stop);
     float ms_per = ms_total / bench_runs;
+    float naive_ms = ms_per;
 
     // FLOPs: sub(1) + exp(1) + add(1) + div(1) ≈ 4 per element
     // (max reduction is negligible for large N, or can be counted as 1 extra)
@@ -214,6 +215,7 @@ int main() {
 
     cudaEventElapsedTime(&ms_total, start, stop);
     ms_per = ms_total / bench_runs;
+    float online_ms = ms_per;
 
     // onlineSoftmax: two passes over input, one write to output
     // per-element ops ≈ fmaxf(1) + 2*expf + mul + add + expf + div = ~7
@@ -244,6 +246,11 @@ int main() {
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+
+    printf("\n========== Speedup ==========\n");
+    printf("naive:   %.3f ms\n", naive_ms);
+    printf("online:  %.3f ms\n", online_ms);
+    printf("Speedup: %.2fx\n", naive_ms / online_ms);
 
     free(h_input); free(h_output); free(h_ref);
     cudaFree(d_input); cudaFree(d_output);
