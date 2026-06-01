@@ -116,10 +116,10 @@ __global__ void onlineSoftmax_vectorized(const float *input, float *output, int 
     float new_max = fmaxf(max_i, cur_val);
     surrogate = surrogate * expf(old_max - new_max) + expf(cur_val - new_max);
     max_i = new_max;
-  }
+  };
   for (int i = tid * VEC; i < N; i += blockDim.x * VEC) {
     if (i + VEC <= N) {
-      float cur_val = *reinterpret_cast<const float4*>(&input[row * N + i]);
+      float4 cur_val = *reinterpret_cast<const float4*>(&input[row * N + i]);
       process_one(cur_val.x);
       process_one(cur_val.y);
       process_one(cur_val.z);
@@ -149,7 +149,7 @@ __global__ void onlineSoftmax_vectorized(const float *input, float *output, int 
   float rowMax = sMax[PAD(0)];
   __syncthreads();
 
-  for (int i = tid + VEC; i < N; i += blockDim.x * VEC) {
+  for (int i = tid * VEC; i < N; i += blockDim.x * VEC) {
     if (i + VEC <= N) {
       float4 v = *reinterpret_cast<const float4*>(&input[row * N + i]);
       float4 out;
@@ -312,10 +312,61 @@ int main() {
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
+    // ==================== onlineSoftmax_vectorized ====================
+    printf("\n========== onlineSoftmax_vectorized ==========\n");
+
+    // Warmup
+    for (int i = 0; i < warmup_runs; i++) onlineSoftmax_vectorized<<<grid, block>>>(d_input, d_output, M, N);
+    cudaDeviceSynchronize();
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    for (int i = 0; i < bench_runs; i++) {
+        onlineSoftmax_vectorized<<<grid, block>>>(d_input, d_output, M, N);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    cudaEventElapsedTime(&ms_total, start, stop);
+    ms_per = ms_total / bench_runs;
+    float vec_ms = ms_per;
+
+    // same algorithmic complexity as onlineSoftmax
+    ops = 7.0 * M * N;
+    gflops = (ops / (ms_per * 1e-3)) / 1e9;
+
+    traffic = 3.0 * M * N * sizeof(float);
+    bw_gb_s = (traffic / (ms_per * 1e-3)) / 1e9;
+
+    printf("Grid: %d, Block: %d\n", grid.x, block.x);
+    printf("Time: %.3f ms (avg of %d runs)\n", ms_per, bench_runs);
+    printf("GFLOPS: %.2f\n", gflops);
+    printf("Bandwidth: %.2f GB/s\n", bw_gb_s);
+
+    // Verify correctness once
+    onlineSoftmax_vectorized<<<grid, block>>>(d_input, d_output, M, N);
+    cudaDeviceSynchronize();
+    cudaMemcpy(h_output, d_output, bytes, cudaMemcpyDeviceToHost);
+
+    maxErr = 0.0f;
+    for (int i = 0; i < M * N; i++) {
+        float err = fabsf(h_output[i] - h_ref[i]);
+        if (err > maxErr) maxErr = err;
+    }
+    printf("Max error: %e\n", maxErr);
+    printf("%s\n", maxErr < 1e-5f ? "PASS" : "FAIL");
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
     printf("\n========== Speedup ==========\n");
     printf("naive:   %.3f ms\n", naive_ms);
     printf("online:  %.3f ms\n", online_ms);
-    printf("Speedup: %.2fx\n", naive_ms / online_ms);
+    printf("vector:  %.3f ms\n", vec_ms);
+    printf("Speedup vs naive:  %.2fx\n", naive_ms / vec_ms);
+    printf("Speedup vs online: %.2fx\n", online_ms / vec_ms);
 
     free(h_input); free(h_output); free(h_ref);
     cudaFree(d_input); cudaFree(d_output);
