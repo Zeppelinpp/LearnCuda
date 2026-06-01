@@ -59,6 +59,46 @@ __global__ void softmaxNaive(const float *input, float *output, int M, int N) {
   }
 }
 
+__global__ void onlineSoftmax(const float *input, float *output, int M, int N) {
+  int row = blockIdx.x;
+  int tid = threadIdx.x;
+  
+  // surrogate & max_i, online softmax update -> block sum into shared memory
+  float surrogate = 0.0f;
+  float max_i = -INFINITY;
+  __shared__ float sSum[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
+  __shared__ float sMax[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
+  for (int i = tid; i < N; i += blockDim.x) {
+    float cur_val = input[row * N + i];
+    float old_max = max_i;
+    float new_max = fmaxf(max_i, cur_val);
+    surrogate = surrogate * expf(old_max - new_max) + expf(cur_val - new_max);
+    max_i = new_max;
+  }
+  sSum[PAD(tid)] = surrogate;
+  sMax[PAD(tid)] = max_i;
+  __syncthreads();
+
+  // tree reduction for whole row sum
+  for (int stride = BLOCK_SIZE / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) {
+      float m1 = sMax[PAD(tid)], m2 = sMax[PAD(tid + stride)];
+      float s1 = sSum[PAD(tid)], s2 = sSum[PAD(tid + stride)];
+      float new_max = fmaxf(m1, m2);
+      sSum[PAD(tid)] = s1 * expf(m1 - new_max) + s2 * expf(m2 - new_max);
+      sMax[PAD(tid)] = new_max;
+    }
+    __syncthreads();
+  }
+  float rowSum = sSum[PAD(0)];
+  float rowMax = sMax[PAD(0)];
+  __syncthreads();
+
+  for (int i = tid; i < N; i += blockDim.x) {
+    output[row * N + i] = expf(input[row * N + i] - rowMax) / rowSum;
+  }
+}
+
 // CPU reference
 void softmaxCPU(const float* input, float* output, int M, int N) {
     for (int row = 0; row < M; row++) {
@@ -98,6 +138,9 @@ int main() {
     dim3 block(BLOCK_SIZE);
     dim3 grid(M);
 
+    // ==================== softmaxNaive ====================
+    printf("\n========== softmaxNaive ==========\n");
+
     // Warmup
     int warmup_runs = 5;
     for (int i = 0; i < warmup_runs; i++) softmaxNaive<<<grid, block>>>(d_input, d_output, M, N);
@@ -134,9 +177,6 @@ int main() {
     printf("GFLOPS: %.2f\n", gflops);
     printf("Bandwidth: %.2f GB/s\n", bw_gb_s);
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
     // Verify correctness once
     softmaxNaive<<<grid, block>>>(d_input, d_output, M, N);
     cudaDeviceSynchronize();
@@ -151,6 +191,59 @@ int main() {
     }
     printf("Max error: %e\n", maxErr);
     printf("%s\n", maxErr < 1e-5f ? "PASS" : "FAIL");
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    // ==================== onlineSoftmax ====================
+    printf("\n========== onlineSoftmax ==========\n");
+
+    // Warmup
+    for (int i = 0; i < warmup_runs; i++) onlineSoftmax<<<grid, block>>>(d_input, d_output, M, N);
+    cudaDeviceSynchronize();
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    for (int i = 0; i < bench_runs; i++) {
+        onlineSoftmax<<<grid, block>>>(d_input, d_output, M, N);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    cudaEventElapsedTime(&ms_total, start, stop);
+    ms_per = ms_total / bench_runs;
+
+    // onlineSoftmax: two passes over input, one write to output
+    // per-element ops ≈ fmaxf(1) + 2*expf + mul + add + expf + div = ~7
+    ops = 7.0 * M * N;
+    gflops = (ops / (ms_per * 1e-3)) / 1e9;
+
+    // HBM traffic: read input twice (online pass + final normalize), write output once
+    traffic = 3.0 * M * N * sizeof(float);
+    bw_gb_s = (traffic / (ms_per * 1e-3)) / 1e9;
+
+    printf("Grid: %d, Block: %d\n", grid.x, block.x);
+    printf("Time: %.3f ms (avg of %d runs)\n", ms_per, bench_runs);
+    printf("GFLOPS: %.2f\n", gflops);
+    printf("Bandwidth: %.2f GB/s\n", bw_gb_s);
+
+    // Verify correctness once
+    onlineSoftmax<<<grid, block>>>(d_input, d_output, M, N);
+    cudaDeviceSynchronize();
+    cudaMemcpy(h_output, d_output, bytes, cudaMemcpyDeviceToHost);
+
+    maxErr = 0.0f;
+    for (int i = 0; i < M * N; i++) {
+        float err = fabsf(h_output[i] - h_ref[i]);
+        if (err > maxErr) maxErr = err;
+    }
+    printf("Max error: %e\n", maxErr);
+    printf("%s\n", maxErr < 1e-5f ? "PASS" : "FAIL");
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     free(h_input); free(h_output); free(h_ref);
     cudaFree(d_input); cudaFree(d_output);
