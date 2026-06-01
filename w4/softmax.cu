@@ -79,7 +79,7 @@ __global__ void onlineSoftmax(const float *input, float *output, int M, int N) {
   sMax[PAD(tid)] = max_i;
   __syncthreads();
 
-  // tree reduction for whole row sum
+  // tree reduction for whole row sum, online merge
   for (int stride = BLOCK_SIZE / 2; stride > 0; stride >>= 1) {
     if (tid < stride) {
       float m1 = sMax[PAD(tid)], m2 = sMax[PAD(tid + stride)];
@@ -96,6 +96,71 @@ __global__ void onlineSoftmax(const float *input, float *output, int M, int N) {
 
   for (int i = tid; i < N; i += blockDim.x) {
     output[row * N + i] = expf(input[row * N + i] - rowMax) / rowSum;
+  }
+}
+
+__global__ void onlineSoftmax_vectorized(const float *input, float *output, int M, int N) {
+  int row = blockIdx.x;
+  int tid = threadIdx.x;
+
+  const int VEC = 4;
+  
+  // surrogate & max_i, online softmax update -> block sum into shared memory
+  float surrogate = 0.0f;
+  float max_i = -INFINITY;
+  __shared__ float sSum[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
+  __shared__ float sMax[BLOCK_SIZE + (BLOCK_SIZE >> 5)];
+
+  auto process_one = [&](float cur_val) {
+    float old_max = max_i;
+    float new_max = fmaxf(max_i, cur_val);
+    surrogate = surrogate * expf(old_max - new_max) + expf(cur_val - new_max);
+    max_i = new_max;
+  }
+  for (int i = tid * VEC; i < N; i += blockDim.x * VEC) {
+    if (i + VEC <= N) {
+      float cur_val = *reinterpret_cast<const float4*>(&input[row * N + i]);
+      process_one(cur_val.x);
+      process_one(cur_val.y);
+      process_one(cur_val.z);
+      process_one(cur_val.w);
+    } else {
+      for (int j = 0; j < N - i; ++j) {
+        process_one(input[row * N + i + j]);
+      }
+    }
+  }
+  sSum[PAD(tid)] = surrogate;
+  sMax[PAD(tid)] = max_i;
+  __syncthreads();
+
+  // tree reduction for whole row sum, online merge
+  for (int stride = BLOCK_SIZE / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) {
+      float m1 = sMax[PAD(tid)], m2 = sMax[PAD(tid + stride)];
+      float s1 = sSum[PAD(tid)], s2 = sSum[PAD(tid + stride)];
+      float new_max = fmaxf(m1, m2);
+      sSum[PAD(tid)] = s1 * expf(m1 - new_max) + s2 * expf(m2 - new_max);
+      sMax[PAD(tid)] = new_max;
+    }
+    __syncthreads();
+  }
+  float rowSum = sSum[PAD(0)];
+  float rowMax = sMax[PAD(0)];
+  __syncthreads();
+
+  for (int i = tid + VEC; i < N; i += blockDim.x * VEC) {
+    if (i + VEC <= N) {
+      float4 v = *reinterpret_cast<const float4*>(&input[row * N + i]);
+      float4 out;
+      out.x = expf(v.x - rowMax) / rowSum;
+      out.y = expf(v.y - rowMax) / rowSum;
+      out.z = expf(v.z - rowMax) / rowSum;
+      out.w = expf(v.w - rowMax) / rowSum;
+      *reinterpret_cast<float4*>(&output[row * N + i]) = out;
+    } else {
+      for (int j = 0; j < N - i; ++j) output[row * N + i + j] = expf(input[row * N + i + j] - rowMax) / rowSum;
+    }
   }
 }
 
